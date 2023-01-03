@@ -33,6 +33,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+
 	_ "github.com/lib/pq"
 )
 
@@ -70,6 +71,22 @@ func Insert_data(db *sql.DB, query string, test bool) {
 		}
 	} else {
 		fmt.Println(query)
+	}
+}
+
+// Executes prepared statement queries
+func Insert_data_prepared(stmt *sql.Stmt, parameters []any, closestmt bool) {
+
+	_, err := stmt.Exec(parameters...)
+	if err != nil {
+		fmt.Println("##################################################")
+		fmt.Println(*stmt, parameters)
+		fmt.Println("##################################################")
+		panic(err)
+	}
+
+	if closestmt {
+		stmt.Close()
 	}
 }
 

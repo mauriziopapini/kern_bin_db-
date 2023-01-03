@@ -41,10 +41,13 @@ import (
 )
 
 type workloads struct {
-	Addr  uint64
-	Name  string
-	Query string
-	DB    *sql.DB
+	Addr      uint64
+	Name      string
+	Query     string
+	DB        *sql.DB
+	Statement *sql.Stmt
+	Args      []any
+	CloseStmt bool
 }
 
 // Context type
@@ -62,6 +65,7 @@ type Addr2line_items struct {
 
 // Commandline handle functions prototype
 type ins_f func(*sql.DB, string, bool)
+type ins_prepared_f func(*sql.Stmt, []any, bool)
 
 func addr2line_init(fn string) *Context {
 	a, err := addr2line.New(fn)
@@ -71,7 +75,7 @@ func addr2line_init(fn string) *Context {
 	addresses := make(chan workloads, 16)
 	context := &Context{a2l: a, ch_workload: addresses}
 
-	go workload(context, Insert_data)
+	go workload(context, Insert_data, Insert_data_prepared)
 
 	return context
 }
@@ -90,35 +94,46 @@ func resolve_addr(context *Context, address uint64) string {
 	return res
 }
 
-func workload(context *Context, insert_func ins_f) {
+func workload(context *Context, insert_func ins_f, insert_prepared_func ins_prepared_f) {
 	var e workloads
 	var qready string
 
 	for {
 		e = <-context.ch_workload
-		switch e.Name {
-		case "None":
-			insert_func(e.DB, e.Query, false)
+		switch e.Statement {
+		case nil:
+			switch e.Name {
+			case "None":
+				insert_func(e.DB, e.Query, false)
+				break
+			default:
+				context.mu.Lock()
+				rs, _ := context.a2l.Resolve(e.Addr)
+				context.mu.Unlock()
+				if len(rs) == 0 {
+					qready = fmt.Sprintf(e.Query, "NONE")
+				}
+				for _, a := range rs {
+					qready = fmt.Sprintf(e.Query, filepath.Clean(a.File))
+					if a.Function == strings.ReplaceAll(e.Name, "sym.", "") {
+						break
+					}
+				}
+				insert_func(e.DB, qready, false)
+				break
+			}
 			break
 		default:
-			context.mu.Lock()
-			rs, _ := context.a2l.Resolve(e.Addr)
-			context.mu.Unlock()
-			if len(rs) == 0 {
-				qready = fmt.Sprintf(e.Query, "NONE")
-			}
-			for _, a := range rs {
-				qready = fmt.Sprintf(e.Query, filepath.Clean(a.File))
-				if a.Function == strings.ReplaceAll(e.Name, "sym.", "") {
-					break
-				}
-			}
-			insert_func(e.DB, qready, false)
+			insert_prepared_func(e.Statement, e.Args, e.CloseStmt)
 			break
 		}
 	}
 }
 
 func spawn_query(db *sql.DB, addr uint64, name string, addresses chan workloads, query string) {
-	addresses <- workloads{addr, name, query, db}
+	addresses <- workloads{addr, name, query, db, nil, make([]any, 0), false}
+}
+
+func spawn_stmt(db *sql.DB, stmt *sql.Stmt, addresses chan workloads, args []any, closestmt bool) {
+	addresses <- workloads{0, "None", "", db, stmt, args, closestmt}
 }

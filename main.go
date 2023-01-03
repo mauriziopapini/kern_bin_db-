@@ -67,6 +67,7 @@ func main() {
 	context := addr2line_init(conf.LinuxWDebug)
 	t := Connect_token{conf.DBURL, conf.DBPort, conf.DBUser, conf.DBPassword, conf.DBTargetDB}
 	db := Connect_db(&t)
+
 	if conf.Mode&(ENABLE_VERSION_CONFIG) != 0 {
 		config, _ := get_FromFile(conf.KConfig_fn)
 		makefile, _ := get_FromFile(conf.KMakefile)
@@ -156,31 +157,44 @@ func main() {
 		indcl := get_indirect_calls(r2p, funcs_data)
 		fmt.Println("Collecting xref")
 		bar = pb.StartNew(count)
-		for _, a := range funcs_data {
+
+		// 1 string, 2 int, 3 string, 4 int, 5 string, 6 string, 7 int
+		stmt, err := db.Prepare("insert into xrefs (caller, callee, ref_addr, source_line, xref_instance_id_ref) " +
+			"select (Select symbol_id from symbols where symbol_address=$1 and symbol_instance_id_ref=$2), " +
+			"(Select symbol_id from symbols where symbol_address =$3 and symbol_instance_id_ref=$4 limit 1), " +
+			"$5, " +
+			"$6, " +
+			"$7;" +
+			"")
+		if err != nil {
+			fmt.Println("################ PREPARE #########################")
+			fmt.Println(err)
+			fmt.Println("##################################################")
+			panic(err)
+		} else {
+			fmt.Println("*************** PREPARED *************************")
+		}
+		for idx_fun, a := range funcs_data {
 			bar.Increment()
 			if strings.Contains(a.Name, "sym.") {
 				Move(r2p, a.Offset)
 				xrefs := remove_non_func(Getxrefs(r2p, a.Offset, indcl, funcs_data, &cache), funcs_data)
-				for _, l := range xrefs {
+				for idx, l := range xrefs {
 					source_ref := resolve_addr(context, l.From)
-					spawn_query(
-						db,
-						0,
-						"None",
-						context.ch_workload,
-						fmt.Sprintf(
-							"insert into xrefs (caller, callee, ref_addr, source_line, xref_instance_id_ref) "+
-								"select (Select symbol_id from symbols where symbol_address ='0x%08[1]x' and symbol_instance_id_ref=%[3]d), "+
-								"(Select symbol_id from symbols where symbol_address ='0x%08[2]x' and symbol_instance_id_ref=%[3]d limit 1), "+
-								"'0x%08[5]x', "+
-								"'%[4]s', "+
-								"%[3]d;"+
-								"",
-							a.Offset,
-							l.To,
-							id,
-							source_ref,
-							l.From))
+					closestmt := false
+					if idx_fun == len(funcs_data)-1 && idx == len(xrefs)-1 {
+						closestmt = true
+					}
+					p1 := fmt.Sprintf("0x%08[1]x", a.Offset)
+					p2 := id
+					p3 := fmt.Sprintf("0x%08[1]x", l.To)
+					p4 := id
+					p5 := fmt.Sprintf("0x%08[1]x", l.From)
+					p6 := source_ref
+					p7 := id
+
+					args := []any{p1, p2, p3, p4, p5, p6, p7}
+					spawn_stmt(db, stmt, context.ch_workload, args, closestmt)
 				}
 			}
 		}
